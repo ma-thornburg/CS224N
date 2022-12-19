@@ -33,8 +33,10 @@ class CausalSelfAttention(nn.Module):
 
     def forward(self, x, layer_past=None):
         B, T, C = x.size()
+        # B = batch size, T = block size, C = embedding dimension
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
+        # B = batch size, T = block size? nh = num heads, hs = head size: d / h
         k = self.key(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         q = self.query(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         v = self.value(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
@@ -49,29 +51,27 @@ class CausalSelfAttention(nn.Module):
 
         # output projection
         y = self.resid_drop(self.proj(y))
+        
+        raise Exception
         return y
 
-"""
-Write your SynthesizerAttention below.
-Hint: paste over the CausalSelfAttention above and modify it minimally.
-"""
 
 class SynthesizerAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
         assert config.n_embd % config.n_head == 0
         # NEW learnable weights
-        self.w1 = nn.Linear(config.n_embd, config.n_embd)
+        self.w1 = nn.Linear(config.n_embd, config.n_embd) # Ai + b1
         self.w2 = nn.Parameter(torch.zeros(config.n_embd // config.n_head,
-            config.block_size-1))
-        self.b2 = nn.Parameter(torch.zeros(config.block_size-1))
+            config.block_size-1)) # Bi
+        self.b2 = nn.Parameter(torch.zeros(config.block_size-1)) #b2
         # value projection
-        self.value = nn.Linear(config.n_embd, config.n_embd)
+        self.value = nn.Linear(config.n_embd, config.n_embd) # V
         # regularization
         self.attn_drop = nn.Dropout(config.attn_pdrop)
         self.resid_drop = nn.Dropout(config.resid_pdrop)
         # output projection
-        self.proj = nn.Linear(config.n_embd, config.n_embd)
+        self.proj = nn.Linear(config.n_embd, config.n_embd) # A
         # causal mask to ensure that attention is only applied to the left in
         #     the input sequence
         self.register_buffer("mask", torch.tril(
@@ -83,11 +83,25 @@ class SynthesizerAttention(nn.Module):
         nn.init.uniform_(self.w2,-0.001,0.001)
 
     def forward(self, x, layer_past=None):
-        # TODO [part g]: Write your SynthesizerAttention below.
-        #   Do not modify __init__().
-        # Hints:
-        #   - Paste over the CausalSelfAttention above and modify it minimally.
-        #   - Consider especially the parameters self.w1, self.w2 and self.b2.
-        #       How do these map to the matrices in the handout?
+        B, T, C = x.size()
+        
+        _relu = torch.nn.ReLU()
+        _test = self.w1(x)
+        _synth_output = _relu(
+            self.w1(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        ) # (B, nh, T, hs)
+        _test_2 = torch.matmul(_synth_output, self.w2)
+        _synth_output = torch.matmul(_synth_output, self.w2[:,:T]) + self.b2[:T]
+        _synth_output = _synth_output.masked_fill(self.mask[:,:,:T,:T] == 0, -1e10)
+        _synth_output = F.softmax(_synth_output, dim=-1)
+        _synth_output = self.attn_drop(_synth_output)
+        _synth_output = torch.matmul(
+            _synth_output, 
+            self.value(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        )
+        y = _synth_output.transpose(1, 2).contiguous().view(B, T, C)
 
-        raise NotImplementedError
+        # output projection
+        y = self.resid_drop(self.proj(y))
+            
+        return y
